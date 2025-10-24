@@ -1,0 +1,338 @@
+discovery_task:
+  description: >
+    Perform a comprehensive discovery of all Azure resources in resource group: {resource_group}.
+    These resources will be replicated with new names in the SAME resource group.
+    
+    Execute the following systematic discovery process:
+    
+    1. RESOURCE INVENTORY:
+       - Use Azure Resource Scanner tool to list all resources
+       - Identify resource types, names, locations, SKUs, and configurations
+       - Capture resource properties, tags, and metadata
+       - Note which resources are current production and which are replicas (if any exist)
+    
+    2. NETWORK TOPOLOGY MAPPING:
+       - Use Azure Network Analyzer tool to map network infrastructure
+       - Identify all VNets, subnets, address spaces, and CIDR blocks
+       - Map NSGs, security rules, and their associations to subnets/NICs
+       - Document public IPs, private endpoints, and DNS configurations
+       - Identify load balancers, application gateways, and traffic routing rules
+       - Map network interfaces and their subnet associations
+       - Document VNet peerings and VPN gateways if present
+       - CRITICAL: Note which subnets will need to be SHARED between original and replica resources
+    
+    3. SERVICE DEPENDENCIES ANALYSIS:
+       - Use Azure Service Dependencies Mapper tool to analyze service connections
+       - Identify storage accounts and their access configurations
+       - Map SQL databases, servers, firewall rules, and connection strings
+       - Document App Services and their configuration (app settings, connection strings)
+       - Identify Key Vaults and their access policies
+       - Map CosmosDB accounts and their configurations
+       - Document managed identities and their role assignments
+       - Identify App Service Plans and which apps are hosted on them
+       - Map Virtual Machines and their NIC associations
+       - Document Function Apps and their dependencies
+    
+    4. CONNECTIVITY MAPPING:
+       - Identify which services connect to which (e.g., App Service -> SQL Database)
+       - Document service endpoints and private endpoints
+       - Map connection strings, access keys, and authentication methods
+       - Identify managed identity usage and role-based access
+       - CRITICAL: Determine which connections reference resources by name vs ID
+       - Note which resources can share the same VNet/subnet with replicas
+    
+    5. RESOURCE NAMING ANALYSIS:
+       - Document all resource names that will need to be changed
+       - Identify resources where names appear in connection strings or configurations
+       - Note Azure naming restrictions and constraints for each resource type
+       - Plan new names using prefix: {name_prefix}
+    
+    6. DEPENDENCY GRAPH:
+       - Create a clear dependency hierarchy
+       - Identify which resources must be created first
+       - Document inter-resource references and dependencies
+       - Separate dependencies into: shared resources (VNets) vs replicated resources
+    
+    7. REPLICATION CONSIDERATIONS:
+       - Identify resources that SHOULD be shared (VNets, subnets, NSGs may be shared)
+       - Identify resources that MUST be replicated (VMs, databases, app services, etc.)
+       - Note any resource limits or quotas in the resource group
+       - Consider costs of running duplicate resources
+    
+    Current year is {current_year}.
+    
+  expected_output: >
+    A comprehensive JSON-structured report containing:
+    
+    1. Complete resource inventory with all configurations
+    2. Network topology map with all connectivity details
+    3. Service dependency graph showing all connections
+    4. Ordered list of resources based on dependencies (what must be created first)
+    5. Resource categorization:
+       - SHARED: Resources that original and replica will share (e.g., VNets, subnets)
+       - REPLICATE: Resources that must be duplicated with new names
+    6. Connection details including:
+       - VNet/subnet associations (note if subnet is shared or new)
+       - NSG associations
+       - Service endpoint configurations
+       - Private endpoint connections
+       - Connection strings and authentication methods
+       - Managed identity assignments
+       - Role-based access control (RBAC) configurations
+    7. Naming strategy:
+       - Original names
+       - New names using prefix {name_prefix}
+       - Dependencies that reference names
+    
+    The output must be detailed enough to recreate the entire infrastructure 
+    maintaining all connections and dependencies within the SAME resource group.
+    
+  agent: azure_discovery_agent
+
+terraform_generation_task:
+  description: >
+    Generate complete, production-ready Terraform configuration files and write them to the 
+    terraform/ directory using the Terraform File Writer tool.
+    
+    CRITICAL: You MUST create separate .tf files for organization and maintainability.
+    Use the Terraform File Writer tool to create each file.
+    
+    FILES TO CREATE:
+    
+    1. provider.tf - Azure provider configuration:
+       - terraform required_version
+       - required_providers block with azurerm provider
+       - azurerm provider configuration
+       - Use Azure CLI authentication (no credentials in code)
+    
+    2. variables.tf - All input variables:
+       - resource_group_name (string)
+       - name_prefix (string)  
+       - location (string with default)
+       - environment (string with default)
+       - Any resource-specific variables (SKUs, sizes, etc.)
+       - Add descriptions and validation where appropriate
+    
+    3. main.tf - Core resource definitions:
+       - Data source for existing resource group
+       - Data sources for shared resources (VNets, subnets if applicable)
+       - All replicated resource blocks in dependency order
+       - Use locals for computed values like full resource names
+       - Add comments explaining resource purposes and dependencies
+    
+    4. outputs.tf - Important outputs:
+       - Resource IDs for all created resources
+       - Connection strings for databases
+       - Endpoints for app services and function apps
+       - Public IPs and DNS names
+       - Any other important configuration values
+    
+    5. terraform.tfvars - Actual variable values:
+       - resource_group_name = "{resource_group}"
+       - name_prefix = "{name_prefix}"
+       - environment = "{target_environment}"
+       - Location and other configured values
+    
+    6. README.md - Deployment documentation:
+       - Overview of what will be created
+       - Prerequisites (Azure CLI, Terraform version, permissions)
+       - Step-by-step deployment instructions
+       - Important notes about shared vs replicated resources
+       - Post-deployment verification steps
+       - Troubleshooting common issues
+    
+    TERRAFORM REQUIREMENTS:
+    
+    1. PROVIDER & VERSIONS:
+       - Use azurerm provider version ~> 3.0
+       - Set terraform required_version >= 1.0
+       - Configure provider to use Azure CLI auth
+    
+    2. RESOURCE GROUP HANDLING:
+       - Use data source: data "azurerm_resource_group" "existing"
+       - Reference as: data.azurerm_resource_group.existing.name
+       - DO NOT create the resource group
+    
+    3. NAMING STRATEGY:
+       - Create local values for names: local {{ {name_prefix}_resource_name = "${{var.name_prefix}}-original-name" }}
+       - Use locals throughout resource definitions
+       - Ensure names comply with Azure restrictions
+    
+    4. SHARED VS REPLICATED:
+       - Use data sources for shared resources (existing VNets/subnets)
+       - Create new resource blocks for replicated resources
+       - Document which is which in comments
+    
+    5. DEPENDENCIES:
+       - Use proper Terraform references (resource.name.id)
+       - Add explicit depends_on where needed
+       - Order resources logically in main.tf
+    
+    6. CONNECTIVITY:
+       - Update all connection strings to reference NEW resources
+       - Use string interpolation for dynamic values
+       - Ensure replica connects to replica (not original)
+    
+    7. BEST PRACTICES:
+       - Use variables for all configurable values
+       - Use locals for computed values
+       - Add meaningful comments
+       - Format consistently
+       - Include all required arguments
+       - Add lifecycle blocks where appropriate
+    
+    IMPORTANT: After generating each file content, immediately use the Terraform File Writer 
+    tool to write it to the terraform/ directory. Create files in this order:
+    1. provider.tf
+    2. variables.tf
+    3. main.tf
+    4. outputs.tf
+    5. terraform.tfvars
+    6. README.md
+    
+  expected_output: >
+    Confirmation that all Terraform files have been successfully created in the terraform/ directory:
+    
+    - provider.tf (with Azure provider configuration)
+    - variables.tf (with all input variables)
+    - main.tf (with all resource definitions)
+    - outputs.tf (with all outputs)
+    - terraform.tfvars (with actual values)
+    - README.md (with deployment instructions)
+    
+    Each file should be syntactically correct, well-formatted, and following Terraform best practices.
+    The configuration should be ready for immediate deployment.
+    
+  agent: terraform_generator_agent
+
+terraform_deployment_task:
+  description: >
+    Deploy the generated Terraform configuration to Azure by executing Terraform commands 
+    in the correct sequence. Use the Terraform Executor tool to run each command.
+    
+    DEPLOYMENT SEQUENCE:
+    
+    1. TERRAFORM INIT:
+       - Execute: terraform init
+       - This downloads the Azure provider and initializes the backend
+       - Verify: Check for "Terraform has been successfully initialized!"
+       - If it fails: Report the error and stop
+    
+    2. TERRAFORM VALIDATE:
+       - Execute: terraform validate
+       - This checks the syntax and configuration validity
+       - Verify: Check for "Success! The configuration is valid"
+       - If it fails: Report specific validation errors and stop
+    
+    3. TERRAFORM FMT:
+       - Execute: terraform fmt -check
+       - This verifies formatting consistency
+       - If formatting issues found: Execute terraform fmt to fix them
+    
+    4. TERRAFORM PLAN:
+       - Execute: terraform plan -out=tfplan
+       - This creates an execution plan showing what will be created
+       - Analyze the plan output:
+         * Count how many resources will be added
+         * Identify any potential issues or warnings
+         * Note the estimated deployment time
+       - Verify: Check that only expected resources are in the plan
+       - If it fails: Report planning errors and stop
+    
+    5. TERRAFORM APPLY:
+       - Execute: terraform apply -auto-approve
+       - This creates the actual Azure resources
+       - Monitor the apply progress:
+         * Track which resources are being created
+         * Note any warnings or errors
+         * Monitor for timeout issues
+       - This step may take 10-30 minutes depending on resources
+       - Verify: Check for "Apply complete!" message
+       - Capture: Resource counts and any output values
+    
+    6. DEPLOYMENT VERIFICATION:
+       - If apply succeeds: Capture all output values
+       - Verify key resources were created
+       - Document any warnings or issues encountered
+    
+    7. ERROR HANDLING:
+       - If any step fails, capture the full error message
+       - Identify the specific resource or configuration causing the issue
+       - Provide recommendations for fixing the problem
+       - Do NOT proceed to the next step if the current step fails
+       - Report clear, actionable error messages
+    
+    MONITORING REQUIREMENTS:
+    
+    - Track execution time for each command
+    - Capture full stdout and stderr from each command
+    - Identify resources being created and their status
+    - Note any Azure throttling or rate limit issues
+    - Monitor for authentication or permission errors
+    
+    SAFETY CHECKS:
+    
+    - Verify you're deploying to the correct resource group: {resource_group}
+    - Confirm resources will use the prefix: {name_prefix}
+    - Check that no production resources will be modified or deleted
+    - Ensure only new resources are being created
+    
+    POST-DEPLOYMENT:
+    
+    - List all successfully created resources
+    - Capture all Terraform outputs (connection strings, endpoints, IDs)
+    - Document the total deployment time
+    - Provide verification steps for the user
+    - Save deployment logs for troubleshooting
+    
+  expected_output: >
+    A comprehensive deployment report in markdown format containing:
+    
+    1. DEPLOYMENT SUMMARY:
+       - Status: SUCCESS or FAILED
+       - Resource Group: {resource_group}
+       - Name Prefix: {name_prefix}
+       - Environment: {target_environment}
+       - Total Deployment Time
+       - Resources Created Count
+    
+    2. EXECUTION LOGS:
+       - Terraform Init: Output and status
+       - Terraform Validate: Output and status
+       - Terraform Plan: Summary of planned changes
+       - Terraform Apply: Detailed creation log
+    
+    3. CREATED RESOURCES:
+       - Complete list of all resources created
+       - Resource type, name, and ID for each
+       - Any resources that failed to create
+    
+    4. TERRAFORM OUTPUTS:
+       - All output values from outputs.tf
+       - Connection strings
+       - Endpoints and URLs
+       - Important configuration values
+    
+    5. VERIFICATION STEPS:
+       - How to verify resources in Azure Portal
+       - How to test connectivity
+       - How to access deployed applications
+    
+    6. ISSUES AND WARNINGS:
+       - Any warnings encountered during deployment
+       - Any resources that took longer than expected
+       - Any rate limiting or throttling issues
+    
+    7. NEXT STEPS:
+       - Post-deployment configuration needed
+       - How to update or modify resources
+       - How to destroy resources if needed (terraform destroy)
+    
+    If deployment fails, the report must include:
+    - Exact error messages
+    - Which resource failed
+    - Potential causes of the failure
+    - Recommended fixes
+    - How to retry the deployment
+    
+  agent: terraform_deployment_agent
