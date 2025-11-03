@@ -41,8 +41,9 @@ def run():
     print(f"WORKFLOW:")
     print(f"1. Discover existing Azure resources")
     print(f"2. Generate Terraform configuration files")
-    print(f"3. Initialize and validate Terraform")
-    print(f"4. Deploy replicated infrastructure")
+    print(f"3. Validate Terraform code quality and compliance")
+    print(f"4. Initialize and validate Terraform")
+    print(f"5. Deploy replicated infrastructure")
     print(f"{'='*70}")
     print(f"NOTE: All new resources will be created in the SAME resource group")
     print(f"      with names prefixed by '{name_prefix}-'")
@@ -71,8 +72,10 @@ def run():
         print(f"     ├── outputs.tf")
         print(f"     ├── terraform.tfvars")
         print(f"     └── README.md")
+        print(f"  📊 terraform_validation_report.md (validation results)")
         print(f"  📄 deployment_report.md (deployment results)")
         print(f"")
+        print(f"Check 'terraform_validation_report.md' for code quality score")
         print(f"Check 'deployment_report.md' for detailed deployment results")
         print(f"{'='*70}\n")
         
@@ -177,6 +180,7 @@ if __name__ == "__main__":
     else:
         run()
 
+        
 # #!/usr/bin/env python
 # import sys
 # import warnings

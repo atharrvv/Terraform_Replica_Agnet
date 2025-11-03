@@ -1,0 +1,1 @@
+Validation skipped - no Terraform files found in terraform/ directory

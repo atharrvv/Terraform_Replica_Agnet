@@ -288,6 +288,233 @@ def terraform_file_writer(filename: str, content: str) -> str:
         return f"Error writing file {filename}: {str(e)}"
 
 
+@tool("Terraform Validator")
+def terraform_validator(terraform_dir: str = "terraform") -> str:
+    """
+    Validates Terraform configuration files for syntax, deprecated resources,
+    version compatibility, and Azure-specific requirements.
+    Returns a detailed validation report with executability score.
+    """
+    import subprocess
+    import json
+    import os
+    import re
+    
+    try:
+        validation_report = {
+            "file_checks": {},
+            "syntax_errors": [],
+            "deprecated_resources": [],
+            "config_issues": [],
+            "version_check": {},
+            "azure_validation": {},
+            "scores": {},
+            "executability_percentage": 0
+        }
+        
+        # Check if terraform directory exists
+        if not os.path.exists(terraform_dir):
+            return json.dumps({
+                "status": "error",
+                "message": f"Terraform directory '{terraform_dir}' does not exist"
+            }, indent=2)
+        
+        # 1. FILE EXISTENCE CHECK
+        required_files = [
+            "provider.tf", "variables.tf", "main.tf", 
+            "outputs.tf", "terraform.tfvars", "README.md"
+        ]
+        
+        for file in required_files:
+            filepath = os.path.join(terraform_dir, file)
+            validation_report["file_checks"][file] = os.path.exists(filepath)
+        
+        files_score = sum(validation_report["file_checks"].values()) / len(required_files) * 100
+        
+        # 2. SYNTAX VALIDATION (terraform fmt check)
+        try:
+            fmt_result = subprocess.run(
+                "terraform fmt -check -recursive",
+                shell=True,
+                cwd=terraform_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if fmt_result.returncode != 0:
+                validation_report["syntax_errors"].append({
+                    "type": "formatting",
+                    "message": "Formatting issues detected",
+                    "files": fmt_result.stdout.split('\n') if fmt_result.stdout else []
+                })
+        except Exception as e:
+            validation_report["syntax_errors"].append({
+                "type": "fmt_error",
+                "message": str(e)
+            })
+        
+        # 3. TERRAFORM VALIDATE (requires init first)
+        try:
+            # Try to run validate (might fail if not initialized)
+            validate_result = subprocess.run(
+                "terraform validate",
+                shell=True,
+                cwd=terraform_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            validation_report["syntax_validation"] = {
+                "status": "pass" if validate_result.returncode == 0 else "fail",
+                "output": validate_result.stdout,
+                "errors": validate_result.stderr
+            }
+        except Exception as e:
+            validation_report["syntax_validation"] = {
+                "status": "error",
+                "message": "Validation requires 'terraform init' first",
+                "note": str(e)
+            }
+        
+        # 4. CHECK FOR DEPRECATED RESOURCES
+        deprecated_mappings = {
+            "azurerm_app_service_plan": {
+                "replacement": "azurerm_service_plan",
+                "reason": "Deprecated since provider v3.0",
+                "doc": "https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/service_plan"
+            },
+            "azurerm_app_service": {
+                "replacement": "azurerm_linux_web_app or azurerm_windows_web_app",
+                "reason": "Deprecated since provider v3.0",
+                "doc": "https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/linux_web_app"
+            },
+            "azurerm_function_app": {
+                "replacement": "azurerm_linux_function_app or azurerm_windows_function_app",
+                "reason": "Deprecated since provider v3.0",
+                "doc": "https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/linux_function_app"
+            }
+        }
+        
+        # Scan main.tf for deprecated resources
+        main_tf_path = os.path.join(terraform_dir, "main.tf")
+        if os.path.exists(main_tf_path):
+            with open(main_tf_path, 'r') as f:
+                lines = f.readlines()
+                for line_num, line in enumerate(lines, 1):
+                    for deprecated, info in deprecated_mappings.items():
+                        if f'resource "{deprecated}"' in line:
+                            validation_report["deprecated_resources"].append({
+                                "file": "main.tf",
+                                "line": line_num,
+                                "deprecated_resource": deprecated,
+                                "replacement": info["replacement"],
+                                "reason": info["reason"],
+                                "documentation": info["doc"],
+                                "code_snippet": line.strip()
+                            })
+        
+        # 5. CHECK PROVIDER VERSIONS
+        provider_tf_path = os.path.join(terraform_dir, "provider.tf")
+        if os.path.exists(provider_tf_path):
+            with open(provider_tf_path, 'r') as f:
+                content = f.read()
+                
+                # Check for azurerm provider version
+                azurerm_version_match = re.search(r'azurerm.*?version\s*=\s*["\']([^"\']+)["\']', content, re.DOTALL)
+                if azurerm_version_match:
+                    version = azurerm_version_match.group(1)
+                    validation_report["version_check"]["azurerm_provider"] = {
+                        "found": version,
+                        "recommended": "~> 4.1",
+                        "status": "ok" if "4." in version or "~> 4" in version else "outdated"
+                    }
+                
+                # Check terraform required version
+                tf_version_match = re.search(r'required_version\s*=\s*["\']([^"\']+)["\']', content)
+                if tf_version_match:
+                    version = tf_version_match.group(1)
+                    validation_report["version_check"]["terraform_version"] = {
+                        "found": version,
+                        "recommended": ">= 1.0",
+                        "status": "ok"
+                    }
+        
+        # 6. AZURE-SPECIFIC CHECKS
+        if os.path.exists(main_tf_path):
+            with open(main_tf_path, 'r') as f:
+                content = f.read()
+                
+                # Check for proper resource naming patterns
+                resource_names = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', content)
+                validation_report["azure_validation"]["resource_names_found"] = len(resource_names)
+                
+                # Check for location references
+                locations = re.findall(r'location\s*=\s*([^\n]+)', content)
+                validation_report["azure_validation"]["location_references"] = len(locations)
+        
+        # 7. CALCULATE EXECUTABILITY SCORE
+        scores = {}
+        
+        # Syntax score (25 points)
+        syntax_score = 25
+        if validation_report["syntax_errors"]:
+            syntax_score -= len(validation_report["syntax_errors"]) * 5
+        syntax_score = max(0, syntax_score)
+        scores["syntax"] = syntax_score
+        
+        # Deprecated resources score (20 points)
+        deprecated_score = 20
+        if validation_report["deprecated_resources"]:
+            deprecated_score = max(0, 20 - len(validation_report["deprecated_resources"]) * 5)
+        scores["deprecated"] = deprecated_score
+        
+        # File completeness score (15 points)
+        file_score = (sum(validation_report["file_checks"].values()) / len(required_files)) * 15
+        scores["files"] = round(file_score, 2)
+        
+        # Provider version score (15 points)
+        version_score = 15
+        if validation_report["version_check"]:
+            azurerm_check = validation_report["version_check"].get("azurerm_provider", {})
+            if azurerm_check.get("status") == "outdated":
+                version_score = 10
+        scores["version"] = version_score
+        
+        # Azure compliance score (15 points) - basic check
+        azure_score = 15
+        if not validation_report["azure_validation"].get("resource_names_found"):
+            azure_score = 10
+        scores["azure_compliance"] = azure_score
+        
+        # Documentation score (10 points)
+        doc_score = 10 if validation_report["file_checks"].get("README.md") else 5
+        scores["documentation"] = doc_score
+        
+        # Calculate total
+        total_score = sum(scores.values())
+        validation_report["scores"] = scores
+        validation_report["executability_percentage"] = round(total_score, 2)
+        
+        # Determine status
+        if total_score >= 90:
+            validation_report["status"] = "EXCELLENT - Ready for deployment"
+        elif total_score >= 70:
+            validation_report["status"] = "GOOD - Minor fixes recommended"
+        elif total_score >= 50:
+            validation_report["status"] = "FAIR - Moderate issues to address"
+        else:
+            validation_report["status"] = "POOR - Major rework required"
+        
+        return json.dumps(validation_report, indent=2)
+    
+    except Exception as e:
+        return json.dumps({
+            "status": "error",
+            "message": f"Validation error: {str(e)}"
+        }, indent=2)
+
 @tool("Terraform Executor")
 def terraform_executor(command: str, working_dir: str = "terraform") -> str:
     """
@@ -352,10 +579,12 @@ class Replica():
         super().__init__()
         # Configure Azure OpenAI LLM
         self.llm = LLM(
-            model="azure/gpt-4o",
+            model="azure/gpt-4o-mini",
             base_url=os.getenv("AZURE_API_BASE"),
             api_key=os.getenv("AZURE_API_KEY"),
-            api_version=os.getenv("AZURE_API_VERSION")
+            api_version=os.getenv("AZURE_API_VERSION"),
+            temperature=0.2
+        
         )
 
     @agent
@@ -373,7 +602,17 @@ class Replica():
             config=self.agents_config['terraform_generator_agent'], # type: ignore[index]
             verbose=True,
             llm=self.llm,
-            tools=[terraform_file_writer]
+            tools=[terraform_file_writer],
+            allow_delegation=False
+        )
+    
+    @agent
+    def terraform_validation_agent(self) -> Agent:
+        return Agent(
+            config=self.agents_config['terraform_validation_agent'], # type: ignore[index]
+            verbose=True,
+            llm=self.llm,
+            tools=[terraform_validator]
         )
 
     @agent
@@ -382,7 +621,9 @@ class Replica():
             config=self.agents_config['terraform_deployment_agent'], # type: ignore[index]
             verbose=True,
             llm=self.llm,
+
             tools=[terraform_executor]
+            
         )
 
     @task
@@ -395,6 +636,13 @@ class Replica():
     def terraform_generation_task(self) -> Task:
         return Task(
             config=self.tasks_config['terraform_generation_task'], # type: ignore[index]
+        )
+
+    @task
+    def terraform_validation_task(self) -> Task:
+        return Task(
+            config=self.tasks_config['terraform_validation_task'], # type: ignore[index]
+            output_file='terraform_validation_report.md'
         )
 
     @task
